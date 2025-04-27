@@ -2,6 +2,91 @@ local composer = require("composer")
 local cards = require("cards")
 local scene = composer.newScene()
 
+-- Позиционирование UI элементов
+local UI = {
+    -- Кнопки
+    endTurnButton = {
+        x = display.contentWidth - 100,
+        y = _Dy - _Dh / 15,
+        width = 160,
+        height = 70
+    },
+    menuButton = {
+        x = display.contentWidth - 100,
+        y = 50,
+        width = 160,
+        height = 70
+    },
+    
+    -- Тексты состояния
+    manaText = {
+        x = 100,
+        y = _Dy - _Dh / 10,
+        fontSize = 24
+    },
+    playerHealthText = {
+        x = 100,
+        y = _Dy - _Dh / 15,
+        fontSize = 28
+    },
+    enemyHealthText = {
+        x = 100,
+        y = 30,
+        fontSize = 28
+    },
+    turnText = {
+        x = display.contentCenterX,
+        y = 30,
+        fontSize = 32
+    },
+    
+    -- Текст действия
+    actionText = {
+        x = display.contentCenterX,
+        y = display.contentCenterY - 120,
+        width = display.contentWidth - 60,
+        fontSize = 24
+    },
+    
+    -- Лог событий
+    logText = {
+        x = display.contentCenterX,
+        y = _Cy + _Dh / 7,
+        width = display.contentWidth - 60,
+        height = 120,
+        fontSize = 18
+    },
+    logBackground = {
+        x = display.contentCenterX,
+        y = _Cy + _Dh / 7,
+        width = display.contentWidth - 40,
+        height = 140,
+        cornerRadius = 10
+    },
+    
+    -- Карты
+    card = {
+        width = 100,
+        height = 150,
+        spacing = 15,
+        fontSize = {
+            name = 16,
+            cost = 18,
+            stats = 18,
+            ability = 18
+        }
+    },
+    
+    -- Поле
+    field = {
+        cellWidth = 80,
+        cellHeight = 100,
+        spacing = 10,
+        playerY = display.contentCenterY + 20,
+        enemyY = display.contentCenterY - 120
+    }
+}
+
 -- Локальные переменные
 local playerHealth = 30
 local enemyHealth = 30
@@ -52,12 +137,68 @@ local animateAttack
 local showAction
 local processAnimationQueue
 
+-- Вспомогательная функция для создания визуального представления карты на поле
+local function createCardVisualOnField(cellGroup, card, cellWidth, cellHeight)
+    -- Имя карты
+    local nameText = display.newText({
+        parent = cellGroup,
+        text = card.name,
+        x = 0,
+        y = -cellHeight/2 + 15,
+        width = cellWidth - 10,
+        font = native.systemFont,
+        fontSize = 10,
+        align = "center"
+    })
+    
+    -- Атака и здоровье
+    local statsText = display.newText({
+        parent = cellGroup,
+        text = card.attack .. "/" .. card.health,
+        x = 0,
+        y = 0,
+        font = native.systemFontBold,
+        fontSize = 14
+    })
+    
+    -- Если карта спит, показываем индикатор
+    if sleepingCards[card] then
+        local sleepIndicator = display.newText({
+            parent = cellGroup,
+            text = "Z",
+            x = cellWidth/2 - 10,
+            y = -cellHeight/2 + 15,
+            font = native.systemFontBold,
+            fontSize = 14
+        })
+        sleepIndicator:setFillColor(0.7, 0.7, 1)
+    end
+    
+    -- Сохраняем ссылку на карту и ее визуальное представление
+    card.group = cellGroup
+    card.x = cellGroup.x
+    card.y = cellGroup.y
+    
+    return cellGroup
+end
+
 -- Функция добавления сообщения в лог
 local function addToLog(message)
     if logText then
-        logText.text = message .. "\n" .. string.sub(logText.text, 1, 100) -- Ограничиваем длину лога
+        -- Ограничиваем длину лога и добавляем новое сообщение
+        local maxLines = 10
+        local lines = {}
+        for line in string.gmatch(logText.text, "[^\r\n]+") do
+            table.insert(lines, line)
+        end
+        table.insert(lines, 1, message)
+        if #lines > maxLines then
+            table.remove(lines)
+        end
+        logText.text = table.concat(lines, "\n")
     end
-    print(message) -- Дублируем в консоль
+    -- Дублируем в консоль с правильным форматированием
+    print(string.format("[Игра] %s", message))
 end
 
 -- Инициализация игры
@@ -78,8 +219,31 @@ local function initGame()
         currentTurn = 1
     else
         currentTurn = 2
-        -- Если первый ход противника, сразу выполняем его
-        endTurn()
+        -- Если первый ход противника, запускаем его ход с небольшой задержкой
+        timer.performWithDelay(1000, function()
+            addToLog("Противник ходит первым")
+            showAction("Противник начинает игру!")
+            aiTurn()
+            
+            -- После действий противника проводим атаки
+            timer.performWithDelay(2000, function()
+                performAttacks()
+                
+                -- Проверяем условие победы после атак
+                timer.performWithDelay(1000, function()
+                    checkWinCondition()
+                    
+                    -- Передаем ход игроку
+                    if playerHealth > 0 and enemyHealth > 0 then
+                        isPlayerTurn = true
+                        turnText.text = "Ваш ход"
+                        addToLog("Ваш ход начался")
+                        showAction("Ваш ход! Разыгрывайте карты")
+                        updateUI()
+                    end
+                end)
+            end)
+        end)
     end
     
     -- Сбрасываем выбранную карту
@@ -123,10 +287,7 @@ updateHandVisuals = function()
     cardVisuals = {}
     
     -- Создаем новые визуальные элементы для карт в руке игрока
-    local cardWidth = 80 -- Увеличиваем размер карт
-    local cardHeight = 125
-    local spacing = 10
-    local startX = display.contentCenterX - ((#playerHand * cardWidth) + (#playerHand - 1) * spacing) / 2 + cardWidth / 2
+    local startX = display.contentCenterX - ((#playerHand * UI.card.width) + (#playerHand - 1) * UI.card.spacing) / 2 + UI.card.width / 2
     
     for i = 1, #playerHand do
         local card = playerHand[i]
@@ -134,41 +295,40 @@ updateHandVisuals = function()
         scene.view:insert(cardGroup)
         
         -- Добавляем эффект тени для карт
-        local cardShadow = display.newRoundedRect(cardGroup, 3, 3, cardWidth, cardHeight, 6)
+        local cardShadow = display.newRoundedRect(cardGroup, 3, 3, UI.card.width, UI.card.height, 8)
         cardShadow:setFillColor(0, 0, 0, 0.5)
         cardShadow:toBack()
         
         -- Фон карты
-        local cardBg = display.newRoundedRect(cardGroup, 0, 0, cardWidth, cardHeight, 6)
+        local cardBg = display.newRoundedRect(cardGroup, 0, 0, UI.card.width, UI.card.height, 8)
         
         -- Если карта выбрана, добавляем заметную обводку и эффект выделения
         if selectedCardIndex == i then
-            cardBg:setFillColor(0.8, 0.7, 0.2) -- Яркий оттенок для выбранной карты
-            cardBg.strokeWidth = 3
+            cardBg:setFillColor(0.8, 0.7, 0.2)
+            cardBg.strokeWidth = 4
             cardBg:setStrokeColor(1, 0.8, 0)
             
             -- Добавляем эффект свечения
-            local glowEffect = display.newCircle(cardGroup, 0, 0, cardWidth * 0.7)
+            local glowEffect = display.newCircle(cardGroup, 0, 0, UI.card.width * 0.7)
             glowEffect:setFillColor(1, 1, 0.5, 0.2)
             glowEffect:toBack()
             transition.to(glowEffect, {time=800, alpha=0.4, iterations=-1, transition=easing.inOutQuad})
             
             -- Эффект "парения" карты
-            cardGroup.y = cardGroup.y - 10
+            cardGroup.y = cardGroup.y - 15
         else
-            -- Нормальный цвет для неактивных карт
             if card.cost <= playerMana then
-                cardBg:setFillColor(0.35, 0.35, 0.4) -- Карта доступна для игры
+                cardBg:setFillColor(0.35, 0.35, 0.4)
             else
-                cardBg:setFillColor(0.25, 0.25, 0.3) -- Карта недоступна из-за маны
+                cardBg:setFillColor(0.25, 0.25, 0.3)
             end
             
-            cardBg.strokeWidth = 2
+            cardBg.strokeWidth = 3
             cardBg:setStrokeColor(0.5, 0.5, 0.5)
         end
         
         -- Создаем фон для заголовка карты
-        local titleBg = display.newRect(cardGroup, 0, -cardHeight/2 + 15, cardWidth, 30)
+        local titleBg = display.newRect(cardGroup, 0, -UI.card.height/2 + 20, UI.card.width, 40)
         titleBg:setFillColor(0.2, 0.2, 0.25)
         
         -- Имя карты
@@ -176,15 +336,15 @@ updateHandVisuals = function()
             parent = cardGroup,
             text = card.name,
             x = 0,
-            y = -cardHeight/2 + 15,
-            width = cardWidth - 10,
+            y = -UI.card.height/2 + 20,
+            width = UI.card.width - 15,
             font = native.systemFontBold,
-            fontSize = 12,
+            fontSize = UI.card.fontSize.name,
             align = "center"
         })
         
         -- Стоимость маны с визуальным индикатором
-        local manaSymbol = display.newCircle(cardGroup, -cardWidth/2 + 12, -cardHeight/2 + 12, 10)
+        local manaSymbol = display.newCircle(cardGroup, -UI.card.width/2 + 15, -UI.card.height/2 + 15, 12)
         if card.cost <= playerMana then
             manaSymbol:setFillColor(0.2, 0.6, 1)
         else
@@ -194,71 +354,67 @@ updateHandVisuals = function()
         local costText = display.newText({
             parent = cardGroup,
             text = card.cost,
-            x = -cardWidth/2 + 12,
-            y = -cardHeight/2 + 12,
+            x = -UI.card.width/2 + 15,
+            y = -UI.card.height/2 + 15,
             font = native.systemFontBold,
-            fontSize = 14
+            fontSize = UI.card.fontSize.cost
         })
         
         -- Атака и здоровье с иконками
-        local attackIcon = display.newCircle(cardGroup, -cardWidth/4, cardHeight/2 - 15, 10)
+        local attackIcon = display.newCircle(cardGroup, -UI.card.width/4, UI.card.height/2 - 20, 12)
         attackIcon:setFillColor(0.9, 0.3, 0.3)
         
         local attackText = display.newText({
             parent = cardGroup,
             text = card.attack,
-            x = -cardWidth/4,
-            y = cardHeight/2 - 15,
+            x = -UI.card.width/4,
+            y = UI.card.height/2 - 20,
             font = native.systemFontBold,
-            fontSize = 14
+            fontSize = UI.card.fontSize.stats
         })
         
-        local healthIcon = display.newCircle(cardGroup, cardWidth/4, cardHeight/2 - 15, 10)
+        local healthIcon = display.newCircle(cardGroup, UI.card.width/4, UI.card.height/2 - 20, 12)
         healthIcon:setFillColor(0.3, 0.9, 0.3)
         
         local healthText = display.newText({
             parent = cardGroup,
             text = card.health,
-            x = cardWidth/4,
-            y = cardHeight/2 - 15,
+            x = UI.card.width/4,
+            y = UI.card.height/2 - 20,
             font = native.systemFontBold,
-            fontSize = 14
+            fontSize = UI.card.fontSize.stats
         })
         
         -- Добавляем иконку способности
         local abilityIcon = display.newText({
             parent = cardGroup,
             text = "✦",
-            x = cardWidth/2 - 10,
-            y = -cardHeight/2 + 12,
+            x = UI.card.width/2 - 15,
+            y = -UI.card.height/2 + 15,
             font = native.systemFontBold,
-            fontSize = 14
+            fontSize = UI.card.fontSize.ability
         })
         abilityIcon:setFillColor(1, 0.8, 0.3)
         
-        cardGroup.x = startX + (i - 1) * (cardWidth + spacing)
-        cardGroup.y = display.contentHeight - cardHeight/2 - 20
+        cardGroup.x = startX + (i - 1) * (UI.card.width + UI.card.spacing)
+        cardGroup.y = display.contentHeight - UI.card.height/2 - 30
         
         -- Добавляем обработчик нажатия на карту
         cardBg:addEventListener("tap", function(event)
             if isPlayerTurn then
-                -- Показываем описание способности карты в логе
                 addToLog(card.name .. ": " .. card.ability)
                 showAction(card.name .. " - " .. card.ability)
                 
                 if selectedCardIndex == i then
-                    -- Если карта уже выбрана, отменяем выбор
                     selectedCardIndex = nil
                 else
-                    -- Иначе выбираем эту карту
                     playCard(i)
                 end
-                updateHandVisuals() -- Обновляем отображение руки для подсветки выбранной карты
+                updateHandVisuals()
             end
             return true
         end)
         
-        -- Сохраняем ссылку на группу
         cardVisuals[i] = {
             group = cardGroup,
             card = card
@@ -277,70 +433,26 @@ updateFieldVisuals = function()
     end
     fieldCells = {}
     
-    local cellWidth = 65  -- Уменьшаем ячейки
-    local cellHeight = 85
-    local spacing = 8
-    local startX = display.contentCenterX - ((5 * cellWidth) + 4 * spacing) / 2 + cellWidth / 2
+    local startX = display.contentCenterX - ((5 * UI.field.cellWidth) + 4 * UI.field.spacing) / 2 + UI.field.cellWidth / 2
     
     -- Создаем ячейки поля для противника (верхний ряд)
     for i = 1, 5 do
         local cellGroup = display.newGroup()
         scene.view:insert(cellGroup)
         
-        local cell = display.newRect(cellGroup, 0, 0, cellWidth, cellHeight)
+        local cell = display.newRect(cellGroup, 0, 0, UI.field.cellWidth, UI.field.cellHeight)
         cell:setFillColor(0.2, 0.2, 0.3)
-        cell.strokeWidth = 2
+        cell.strokeWidth = 3
         cell:setStrokeColor(0.4, 0.4, 0.5)
         
-        cellGroup.x = startX + (i - 1) * (cellWidth + spacing)
-        cellGroup.y = display.contentCenterY - cellHeight - 10
+        cellGroup.x = startX + (i - 1) * (UI.field.cellWidth + UI.field.spacing)
+        cellGroup.y = UI.field.enemyY
         
         fieldCells[i] = cellGroup
         
-        -- Если в этой ячейке есть карта, отображаем ее
         if enemyField[i] then
-            local card = enemyField[i]
-            
-            -- Имя карты
-            local nameText = display.newText({
-                parent = cellGroup,
-                text = card.name,
-                x = 0,
-                y = -cellHeight/2 + 15,
-                width = cellWidth - 10,
-                font = native.systemFont,
-                fontSize = 10,
-                align = "center"
-            })
-            
-            -- Атака и здоровье
-            local statsText = display.newText({
-                parent = cellGroup,
-                text = card.attack .. "/" .. card.health,
-                x = 0,
-                y = 0,
-                font = native.systemFontBold,
-                fontSize = 14
-            })
-            
-            -- Если карта спит, показываем индикатор
-            if sleepingCards[card] then
-                local sleepIndicator = display.newText({
-                    parent = cellGroup,
-                    text = "Z",
-                    x = cellWidth/2 - 10,
-                    y = -cellHeight/2 + 15,
-                    font = native.systemFontBold,
-                    fontSize = 14
-                })
-                sleepIndicator:setFillColor(0.7, 0.7, 1)
-            end
-            
-            -- Сохраняем ссылку на карту и ее визуальное представление
-            fieldCells[i].card = card
-            card.group = cellGroup
-            card.x = cellGroup.x
-            card.y = cellGroup.y
+            createCardVisualOnField(cellGroup, enemyField[i], UI.field.cellWidth, UI.field.cellHeight)
+            fieldCells[i].card = enemyField[i]
         end
     end
     
@@ -349,87 +461,41 @@ updateFieldVisuals = function()
         local cellGroup = display.newGroup()
         scene.view:insert(cellGroup)
         
-        local cell = display.newRect(cellGroup, 0, 0, cellWidth, cellHeight)
+        local cell = display.newRect(cellGroup, 0, 0, UI.field.cellWidth, UI.field.cellHeight)
         
-        -- Если выбрана карта и ячейка свободна, подсвечиваем ее как доступную для размещения
         if selectedCardIndex and not playerField[i] and isPlayerTurn then
-            cell:setFillColor(0.3, 0.5, 0.3) -- Зеленоватый цвет для доступных ячеек
+            cell:setFillColor(0.3, 0.5, 0.3)
         else
             cell:setFillColor(0.2, 0.3, 0.2)
         end
         
-        cell.strokeWidth = 2
+        cell.strokeWidth = 3
         cell:setStrokeColor(0.4, 0.5, 0.4)
         
-        cellGroup.x = startX + (i - 1) * (cellWidth + spacing)
-        cellGroup.y = display.contentCenterY + 10
+        cellGroup.x = startX + (i - 1) * (UI.field.cellWidth + UI.field.spacing)
+        cellGroup.y = UI.field.playerY
         
         fieldCells[i + 5] = cellGroup
         
-        -- Добавляем обработчик нажатия на ячейку
         cell:addEventListener("tap", function(event)
             if selectedCardIndex and isPlayerTurn and not playerField[i] then
                 placeCardOnField(selectedCardIndex, i)
-                -- Обновляем отображение поля и руки
                 updateFieldVisuals()
             end
             return true
         end)
         
-        -- Если в этой ячейке есть карта, отображаем ее
         if playerField[i] then
-            local card = playerField[i]
+            createCardVisualOnField(cellGroup, playerField[i], UI.field.cellWidth, UI.field.cellHeight)
+            fieldCells[i + 5].card = playerField[i]
             
-            -- Имя карты
-            local nameText = display.newText({
-                parent = cellGroup,
-                text = card.name,
-                x = 0,
-                y = -cellHeight/2 + 15,
-                width = cellWidth - 10,
-                font = native.systemFont,
-                fontSize = 10,
-                align = "center"
-            })
-            
-            -- Атака и здоровье
-            local statsText = display.newText({
-                parent = cellGroup,
-                text = card.attack .. "/" .. card.health,
-                x = 0,
-                y = 0,
-                font = native.systemFontBold,
-                fontSize = 14
-            })
-            
-            -- Если карта спит, показываем индикатор
-            if sleepingCards[card] then
-                local sleepIndicator = display.newText({
-                    parent = cellGroup,
-                    text = "Z",
-                    x = cellWidth/2 - 10,
-                    y = -cellHeight/2 + 15,
-                    font = native.systemFontBold,
-                    fontSize = 14
-                })
-                sleepIndicator:setFillColor(0.7, 0.7, 1)
-            end
-            
-            -- Сохраняем ссылку на карту и ее визуальное представление
-            fieldCells[i + 5].card = card
-            card.group = cellGroup
-            card.x = cellGroup.x
-            card.y = cellGroup.y
-            
-            -- Добавляем обработчик нажатия на карту
             cell:addEventListener("tap", function(event)
                 if isPlayerTurn then
-                    -- Показываем информацию о карте при клике на нее
-                    addToLog(card.name .. ": " .. card.ability)
-                    showAction(card.name .. " - " .. card.ability)
+                    addToLog(playerField[i].name .. ": " .. playerField[i].ability)
+                    showAction(playerField[i].name .. " - " .. playerField[i].ability)
                     
-                    if sleepingCards[card] then
-                        addToLog(card.name .. " спит и не может атаковать в этот ход")
+                    if sleepingCards[playerField[i]] then
+                        addToLog(playerField[i].name .. " спит и не может атаковать в этот ход")
                     end
                 end
                 return true
@@ -700,184 +766,88 @@ performAttacks = function()
     -- Очищаем очередь анимаций
     animationQueue = {}
     
-    -- Функция для добавления атаки в очередь
-    local function queueAttack(attacker, defender, isHero, i)
-        table.insert(animationQueue, function(callback)
-            if isHero then
-                local target = (attacker.y < display.contentCenterY) and {x = display.contentCenterX, y = display.contentHeight - 50} or {x = display.contentCenterX, y = 50}
-                
-                if attacker.y < display.contentCenterY then
-                    -- Враг атакует игрока
-                    addToLog(attacker.name .. " атакует вашего героя на " .. attacker.attack)
-                else
-                    -- Игрок атакует врага
-                    addToLog(attacker.name .. " атакует героя противника на " .. attacker.attack)
-                end
-                
-                animateAttack(attacker, target, attacker.attack, true, callback)
-            else
-                addToLog(attacker.name .. " (" .. attacker.attack .. ") атакует " .. defender.name .. " (" .. defender.health .. ")")
-                animateAttack(attacker, defender, attacker.attack, false, callback)
-            end
-        end)
-    end
-    
-    -- Функция для добавления уничтожения карты в очередь
-    local function queueDestruction(card, position, isPlayer)
-        table.insert(animationQueue, function(callback)
-            addToLog(card.name .. " уничтожен")
-            showAction(card.name .. " уничтожен!")
-            
-            -- Анимация уничтожения
-            local cardGroup = card.group
-            if cardGroup then
-                transition.to(cardGroup, {
-                    time = 300,
-                    alpha = 0,
-                    xScale = 0.5,
-                    yScale = 0.5,
-                    onComplete = function()
-                        -- Удаляем карту из поля
-                        if isPlayer then
-                            playerField[position] = nil
-                        else
-                            enemyField[position] = nil
-                        end
-                        
-                        if callback then
-                            callback()
-                        end
-                    end
-                })
-            else
-                -- Если нет визуального представления, просто удаляем карту
-                if isPlayer then
-                    playerField[position] = nil
-                else
-                    enemyField[position] = nil
-                end
-                
-                if callback then
-                    callback()
-                end
-            end
-        end)
-    end
-    
     -- Проверка карт, которые проснулись
     for card, _ in pairs(sleepingCards) do
         sleepingCards[card] = nil -- Удаляем все спящие карты (они просыпаются)
         addToLog(card.name .. " просыпается и готов атаковать")
     end
     
-    -- Атаки карт игрока
-    for i = 1, 5 do
-        if playerField[i] then
-            local attackerCard = playerField[i]
-            
-            -- Проверяем, не спит ли карта
-            if not sleepingCards[attackerCard] then
-                -- Если напротив есть карта противника, атакуем ее
-                if enemyField[i] then
-                    local defenderCard = enemyField[i]
-                    
-                    -- Добавляем анимацию атаки в очередь
-                    queueAttack(attackerCard, defenderCard, false, i)
-                    
-                    -- Наносим урон (но не удаляем карту сразу)
-                    defenderCard.health = defenderCard.health - attackerCard.attack
-                    attackerCard.health = attackerCard.health - defenderCard.attack
-                    
-                    -- Проверяем, уничтожена ли карта противника
-                    if defenderCard.health <= 0 then
-                        queueDestruction(defenderCard, i, false)
-                    end
-                    
-                    -- Проверяем, уничтожена ли карта игрока
-                    if attackerCard.health <= 0 then
-                        queueDestruction(attackerCard, i, true)
-                    end
-                    
-                    -- Применяем особые эффекты
-                    if attackerCard.name == "Вампир" and attackerCard.health > 0 then
-                        -- Вампиризм: восстанавливает здоровье равное урону
-                        local healing = attackerCard.attack
-                        table.insert(animationQueue, function(callback)
-                            addToLog(attackerCard.name .. " восстанавливает " .. healing .. " здоровья")
-                            showAction(attackerCard.name .. " восстанавливает " .. healing .. " здоровья")
+    -- Обработка атак для обоих игроков
+    local function processFieldAttacks(attackerField, defenderField, isPlayer)
+        for i = 1, 5 do
+            local attacker = attackerField[i]
+            if attacker and not sleepingCards[attacker] then
+                local target = defenderField[i]
+                
+                if target then
+                    -- Карта атакует карту напротив
+                    table.insert(animationQueue, function(callback)
+                        -- Логируем атаку
+                        addToLog(attacker.name .. " (" .. attacker.attack .. ") атакует " .. target.name .. " (" .. target.health .. ")")
+                        
+                        -- Анимируем атаку
+                        animateAttack(attacker, target, attacker.attack, false, function()
+                            -- Наносим урон
+                            target.health = target.health - attacker.attack
+                            attacker.health = attacker.health - target.attack
                             
-                            -- Анимация исцеления
-                            local healVisual = display.newCircle(scene.view, attackerCard.x, attackerCard.y, 15)
-                            healVisual:setFillColor(0, 1, 0, 0.5) -- Зеленый круг
+                            -- Проверяем, уничтожены ли карты
+                            if target.health <= 0 then
+                                destroyCard(target, defenderField, i)
+                            else
+                                updateCardHealth(target)
+                            end
                             
-                            transition.to(healVisual, {
-                                time = 500,
-                                alpha = 0,
-                                xScale = 2,
-                                yScale = 2,
-                                onComplete = function()
-                                    healVisual:removeSelf()
-                                    if callback then callback() end
+                            if attacker.health <= 0 then
+                                destroyCard(attacker, attackerField, i)
+                            else
+                                updateCardHealth(attacker)
+                                
+                                -- Применяем особые эффекты
+                                if attacker.name == "Вампир" then
+                                    -- Вампиризм: восстанавливает здоровье равное урону
+                                    local healing = attacker.attack
+                                    attacker.health = attacker.health + healing
+                                    updateCardHealth(attacker)
+                                    addToLog(attacker.name .. " восстанавливает " .. healing .. " здоровья")
+                                    showAction(attacker.name .. " восстанавливает " .. healing .. " здоровья")
                                 end
-                            })
+                            end
                             
-                            attackerCard.health = attackerCard.health + healing
+                            if callback then callback() end
                         end)
-                    end
-                    
-                    if defenderCard.name == "Жрец Тьмы" and defenderCard.health <= 0 then
-                        -- При уничтожении наносит урон герою противника
-                        table.insert(animationQueue, function(callback)
-                            local damage = 2
-                            addToLog("Жрец Тьмы наносит " .. damage .. " урона вашему герою при гибели")
-                            showAction("Жрец Тьмы наносит " .. damage .. " урона вашему герою!")
-                            
-                            playerHealth = playerHealth - damage
-                            
-                            -- Анимация урона
-                            local damageText = display.newText({
-                                parent = scene.view,
-                                text = "-" .. damage,
-                                x = display.contentCenterX,
-                                y = display.contentHeight - 50,
-                                font = native.systemFontBold,
-                                fontSize = 24
-                            })
-                            damageText:setFillColor(1, 0, 0)
-                            
-                            transition.to(damageText, {
-                                time = 500,
-                                y = damageText.y - 30,
-                                alpha = 0,
-                                onComplete = function()
-                                    damageText:removeSelf()
-                                    if callback then callback() end
-                                end
-                            })
-                        end)
-                    end
+                    end)
                 else
-                    -- Если напротив нет карты, атакуем героя противника
-                    queueAttack(attackerCard, nil, true, i)
-                    enemyHealth = enemyHealth - attackerCard.attack
+                    -- Карта атакует героя напрямую
+                    local targetHealth = isPlayer and enemyHealth or playerHealth
+                    local healthRef = isPlayer and "enemyHealth" or "playerHealth"
+                    
+                    table.insert(animationQueue, function(callback)
+                        local targetPos = {
+                            x = display.contentCenterX,
+                            y = isPlayer and 50 or display.contentHeight - 50
+                        }
+                        
+                        addToLog(attacker.name .. " атакует героя напрямую на " .. attacker.attack)
+                        animateAttack(attacker, targetPos, attacker.attack, true, function()
+                            -- Наносим урон
+                            if isPlayer then
+                                enemyHealth = enemyHealth - attacker.attack
+                            else
+                                playerHealth = playerHealth - attacker.attack
+                            end
+                            
+                            if callback then callback() end
+                        end)
+                    end)
                 end
             end
         end
     end
     
-    -- Атаки карт противника (те, которые не были атакованы)
-    for i = 1, 5 do
-        if enemyField[i] and not sleepingCards[enemyField[i]] then
-            local attackerCard = enemyField[i]
-            
-            -- Если напротив есть карта игрока, пропускаем (урон уже был нанесен)
-            if not playerField[i] then
-                -- Если напротив нет карты, атакуем героя игрока
-                queueAttack(attackerCard, nil, true, i)
-                playerHealth = playerHealth - attackerCard.attack
-            end
-        end
-    end
+    -- Обрабатываем атаки игрока и противника
+    processFieldAttacks(playerField, enemyField, true)
+    processFieldAttacks(enemyField, playerField, false)
     
     -- Запускаем анимации
     timer.performWithDelay(100, processAnimationQueue)
@@ -975,29 +945,57 @@ end
 createUI = function()
     local sceneGroup = scene.view
     
-    -- Увеличиваем размеры элементов
-    local scale = 1.1 -- Больший масштаб элементов
-    
     -- Кнопка завершения хода
     local endTurnButton = display.newRect(
         sceneGroup,
-        display.contentWidth - 70,
-        display.contentCenterY,
-        120,
-        50
+        UI.endTurnButton.x,
+        UI.endTurnButton.y,
+        UI.endTurnButton.width,
+        UI.endTurnButton.height
     )
     endTurnButton:setFillColor(0.3, 0.5, 0.3)
-    endTurnButton.strokeWidth = 2
+    endTurnButton.strokeWidth = 3
     endTurnButton:setStrokeColor(0.5, 0.8, 0.5)
     
     local endTurnText = display.newText({
         parent = sceneGroup,
         text = "Конец хода",
-        x = display.contentWidth - 70,
-        y = display.contentCenterY,
+        x = UI.endTurnButton.x,
+        y = UI.endTurnButton.y,
         font = native.systemFontBold,
-        fontSize = 18
+        fontSize = UI.endTurnButton.fontSize or 24
     })
+    
+    -- Кнопка выхода в меню
+    local menuButton = display.newRect(
+        sceneGroup,
+        UI.menuButton.x,
+        UI.menuButton.y,
+        UI.menuButton.width,
+        UI.menuButton.height
+    )
+    menuButton:setFillColor(0.5, 0.3, 0.3)
+    menuButton.strokeWidth = 3
+    menuButton:setStrokeColor(0.8, 0.5, 0.5)
+    
+    local menuButtonText = display.newText({
+        parent = sceneGroup,
+        text = "В меню",
+        x = UI.menuButton.x,
+        y = UI.menuButton.y,
+        font = native.systemFontBold,
+        fontSize = UI.menuButton.fontSize or 24
+    })
+    
+    -- Обработчик нажатия на кнопку меню
+    menuButton:addEventListener("tap", function(event)
+        if soundEffects and soundEffects.button then
+            audio.play(soundEffects.button)
+        end
+        -- Завершаем игру с поражением
+        endGame("defeat")
+        return true
+    end)
     
     -- Обработчик нажатия на кнопку
     endTurnButton:addEventListener("tap", function(event)
@@ -1016,10 +1014,10 @@ createUI = function()
     manaText = display.newText({
         parent = sceneGroup,
         text = "Мана: 1/10",
-        x = 70,
-        y = display.contentHeight - 50 * scale,
+        x = UI.manaText.x,
+        y = UI.manaText.y,
         font = native.systemFontBold,
-        fontSize = 18
+        fontSize = UI.manaText.fontSize
     })
     manaText:setFillColor(0.2, 0.6, 0.9)
     
@@ -1027,10 +1025,10 @@ createUI = function()
     playerHealthText = display.newText({
         parent = sceneGroup,
         text = "Игрок: 30",
-        x = 70,
-        y = display.contentHeight - 25 * scale,
+        x = UI.playerHealthText.x,
+        y = UI.playerHealthText.y,
         font = native.systemFontBold,
-        fontSize = 20
+        fontSize = UI.playerHealthText.fontSize
     })
     playerHealthText:setFillColor(0.2, 0.9, 0.3)
     
@@ -1038,10 +1036,10 @@ createUI = function()
     enemyHealthText = display.newText({
         parent = sceneGroup,
         text = "Враг: 30",
-        x = 70,
-        y = 25 * scale,
+        x = UI.enemyHealthText.x,
+        y = UI.enemyHealthText.y,
         font = native.systemFontBold,
-        fontSize = 20
+        fontSize = UI.enemyHealthText.fontSize
     })
     enemyHealthText:setFillColor(0.9, 0.3, 0.2)
     
@@ -1049,10 +1047,10 @@ createUI = function()
     turnText = display.newText({
         parent = sceneGroup,
         text = "Ваш ход",
-        x = display.contentCenterX,
-        y = 25 * scale,
+        x = UI.turnText.x,
+        y = UI.turnText.y,
         font = native.systemFontBold,
-        fontSize = 24
+        fontSize = UI.turnText.fontSize
     })
     turnText:setFillColor(1, 0.9, 0.4)
     
@@ -1060,11 +1058,11 @@ createUI = function()
     actionText = display.newText({
         parent = sceneGroup,
         text = "",
-        x = display.contentCenterX,
-        y = display.contentCenterY - 100,
-        width = display.contentWidth - 40,
+        x = UI.actionText.x,
+        y = UI.actionText.y,
+        width = UI.actionText.width,
         font = native.systemFontBold,
-        fontSize = 18,
+        fontSize = UI.actionText.fontSize,
         align = "center"
     })
     actionText:setFillColor(1, 0.8, 0)
@@ -1074,12 +1072,12 @@ createUI = function()
     logText = display.newText({
         parent = sceneGroup,
         text = "Игра началась",
-        x = display.contentCenterX,
-        y = display.contentHeight - 180 * scale,
-        width = display.contentWidth - 40,
-        height = 100,
+        x = UI.logText.x,
+        y = UI.logText.y,
+        width = UI.logText.width,
+        height = UI.logText.height,
         font = native.systemFont,
-        fontSize = 14,
+        fontSize = UI.logText.fontSize,
         align = "left"
     })
     logText:setFillColor(0.9, 0.9, 0.9)
@@ -1087,11 +1085,11 @@ createUI = function()
     -- Добавляем фоновую подложку для лога
     local logBackground = display.newRoundedRect(
         sceneGroup,
-        display.contentCenterX,
-        display.contentHeight - 180 * scale,
-        display.contentWidth - 20,
-        110,
-        8
+        UI.logBackground.x,
+        UI.logBackground.y,
+        UI.logBackground.width,
+        UI.logBackground.height,
+        UI.logBackground.cornerRadius
     )
     logBackground:setFillColor(0.1, 0.1, 0.1, 0.6)
     logBackground:toBack()
@@ -1233,21 +1231,18 @@ showAction = function(text)
             time = 500,
             alpha = 0
         })
+        
+        -- Дублируем в консоль
+        print(string.format("[Действие] %s", text))
     end
 end
 
--- Функция атаки между картами
-attack = function(attackerCol, targetCol)
+-- Универсальная функция атаки
+attack = function(attackerCol, targetCol, targetType)
     local attacker = playerField[attackerCol]
-    local target = enemyField[targetCol]
     
     if not attacker then
         addToLog("Ошибка: атакующая карта не найдена")
-        return false
-    end
-    
-    if not target then
-        addToLog("Ошибка: цель атаки не найдена")
         return false
     end
     
@@ -1263,242 +1258,126 @@ attack = function(attackerCol, targetCol)
         return false
     end
     
-    -- Логирование события атаки
-    addToLog(attacker.name .. " атакует " .. target.name)
-    
     -- Сохраняем исходные координаты атакующей карты
-    local originalX, originalY
-    if attacker.group then
-        originalX, originalY = attacker.group.x, attacker.group.y
-    else
-        originalX, originalY = attacker.x, attacker.y
-    end
+    local originalX = attacker.x
+    local originalY = attacker.y
     
-    -- Получаем координаты цели
-    local targetX, targetY
-    if target.group then
-        targetX, targetY = target.group.x, target.group.y
-    else
-        targetX, targetY = target.x, target.y
-    end
-    
-    -- Создаем анимацию атаки в очереди
-    table.insert(animationQueue, function(callback)
-        -- Анимация движения атакующей карты к цели
-        local attackEffect = display.newCircle(scene.view, originalX, originalY, 15)
-        attackEffect:setFillColor(1, 0.3, 0.3, 0.8)
+    -- Определяем цель атаки
+    if targetType == "hero" then
+        -- Атака по герою
+        local targetY = 50 -- Верхняя часть экрана (враг)
         
-        transition.to(attackEffect, {
-            time = 300,
-            x = targetX,
-            y = targetY,
-            onComplete = function()
-                -- Визуальный эффект удара
-                local impactEffect = display.newCircle(scene.view, targetX, targetY, 25)
-                impactEffect:setFillColor(1, 0, 0, 0.6)
-                
-                transition.to(impactEffect, {
-                    time = 200,
-                    alpha = 0,
-                    xScale = 2,
-                    yScale = 2,
-                    onComplete = function()
-                        impactEffect:removeSelf()
-                        attackEffect:removeSelf()
-                        
-                        -- Применение урона
-                        target.health = target.health - attacker.attack
-                        attacker.health = attacker.health - target.attack
-                        
-                        -- Отображение урона для обеих карт
-                        local damageToTarget = display.newText({
-                            parent = scene.view,
-                            text = "-" .. attacker.attack,
-                            x = targetX,
-                            y = targetY,
-                            font = native.systemFontBold,
-                            fontSize = 24
-                        })
-                        damageToTarget:setFillColor(1, 0, 0)
-                        
-                        local damageToAttacker = display.newText({
-                            parent = scene.view,
-                            text = "-" .. target.attack,
-                            x = originalX,
-                            y = originalY,
-                            font = native.systemFontBold,
-                            fontSize = 24
-                        })
-                        damageToAttacker:setFillColor(1, 0, 0)
-                        
-                        transition.to(damageToTarget, {
-                            time = 500,
-                            y = targetY - 30,
-                            alpha = 0,
-                            onComplete = function() damageToTarget:removeSelf() end
-                        })
-                        
-                        transition.to(damageToAttacker, {
-                            time = 500,
-                            y = originalY - 30,
-                            alpha = 0,
-                            onComplete = function() damageToAttacker:removeSelf() end
-                        })
-                        
-                        -- Обновление отображения здоровья карт
-                        updateCardHealth(attacker)
-                        updateCardHealth(target)
-                        
-                        -- Проверка на уничтожение карт после атаки
-                        local checkDestruction = function()
-                            local cardsDestroyed = false
+        -- Создаем анимацию атаки в очереди
+        table.insert(animationQueue, function(callback)
+            addToLog(attacker.name .. " атакует героя противника на " .. attacker.attack)
+            
+            -- Анимация движения к цели
+            local attackEffect = display.newCircle(scene.view, originalX, originalY, 15)
+            attackEffect:setFillColor(1, 0.3, 0.3, 0.8)
+            
+            transition.to(attackEffect, {
+                time = 300,
+                x = display.contentCenterX,
+                y = targetY,
+                onComplete = function()
+                    -- Применение урона после завершения анимации
+                    local damage = attacker.attack
+                    enemyHealth = enemyHealth - damage
+                    
+                    -- Эффект удара
+                    local impactEffect = display.newCircle(scene.view, display.contentCenterX, targetY, 25)
+                    impactEffect:setFillColor(1, 0, 0, 0.6)
+                    
+                    transition.to(impactEffect, {
+                        time = 200,
+                        alpha = 0,
+                        xScale = 2,
+                        yScale = 2,
+                        onComplete = function()
+                            impactEffect:removeSelf()
+                            attackEffect:removeSelf()
                             
+                            -- Обновляем отображение здоровья
+                            updateHealthDisplay()
+                            
+                            -- Проверка победы
+                            checkWinCondition()
+                            
+                            if callback then callback() end
+                        end
+                    })
+                end
+            })
+        end)
+    else
+        -- Атака по карте
+        local target = enemyField[targetCol]
+        
+        if not target then
+            addToLog("Ошибка: цель атаки не найдена")
+            return false
+        end
+        
+        -- Получаем координаты цели
+        local targetX = target.x
+        local targetY = target.y
+        
+        -- Логируем атаку
+        addToLog(attacker.name .. " атакует " .. target.name)
+        
+        -- Создаем анимацию атаки в очереди
+        table.insert(animationQueue, function(callback)
+            -- Анимация атаки
+            local attackEffect = display.newCircle(scene.view, originalX, originalY, 15)
+            attackEffect:setFillColor(1, 0.3, 0.3, 0.8)
+            
+            transition.to(attackEffect, {
+                time = 300,
+                x = targetX,
+                y = targetY,
+                onComplete = function()
+                    -- Эффект удара
+                    local impactEffect = display.newCircle(scene.view, targetX, targetY, 25)
+                    impactEffect:setFillColor(1, 0, 0, 0.6)
+                    
+                    transition.to(impactEffect, {
+                        time = 200,
+                        alpha = 0,
+                        xScale = 2,
+                        yScale = 2,
+                        onComplete = function()
+                            impactEffect:removeSelf()
+                            attackEffect:removeSelf()
+                            
+                            -- Применение урона
+                            target.health = target.health - attacker.attack
+                            attacker.health = attacker.health - target.attack
+                            
+                            -- Обновляем отображение здоровья
+                            updateCardHealth(attacker)
+                            updateCardHealth(target)
+                            
+                            -- Проверка на уничтожение
                             if target.health <= 0 then
                                 destroyCard(target, enemyField, targetCol)
-                                cardsDestroyed = true
                             end
                             
                             if attacker.health <= 0 then
                                 destroyCard(attacker, playerField, attackerCol)
-                                cardsDestroyed = true
                             end
                             
-                            -- Проверка победы/поражения после уничтожения карт
-                            local gameEnded = checkWinCondition()
+                            -- Проверка победы
+                            checkWinCondition()
                             
-                            -- Если игра не завершилась и колбэк существует, вызываем его
-                            if not gameEnded and callback then
-                                callback()
-                            end
+                            if callback then callback() end
                         end
-                        
-                        -- Небольшая задержка перед проверкой уничтожения
-                        timer.performWithDelay(300, checkDestruction)
-                    end
-                })
-            end
-        })
-    end)
-    
-    -- Запускаем очередь анимаций, если она не запущена
-    if not animationInProgress then
-        processAnimationQueue()
+                    })
+                end
+            })
+        end)
     end
     
-    return true
-end
-
--- Функция атаки игрока напрямую
-attackPlayer = function(attackerCol, targetType)
-    local attacker = playerField[attackerCol]
-    
-    if not attacker then
-        addToLog("Ошибка: атакующая карта не найдена")
-        return false
-    end
-    
-    -- Проверка на ход игрока
-    if not isPlayerTurn then
-        addToLog("Сейчас не ваш ход")
-        return false
-    end
-    
-    -- Проверка на возможность атаки
-    if sleepingCards[attacker] then
-        addToLog(attacker.name .. " спит и не может атаковать в этом ходу")
-        return false
-    end
-    
-    -- Определяем цель атаки (игрок или противник)
-    local targetHealth, targetY
-    if targetType == "enemy" then
-        targetHealth = enemyHealth
-        targetY = 50 -- Верхняя часть экрана (враг)
-    else
-        targetHealth = playerHealth
-        targetY = display.contentHeight - 50 -- Нижняя часть экрана (игрок)
-    end
-    
-    -- Сохраняем исходные координаты атакующей карты
-    local originalX, originalY
-    if attacker.group then
-        originalX, originalY = attacker.group.x, attacker.group.y
-    else
-        originalX, originalY = attacker.x, attacker.y
-    end
-    
-    -- Создаем анимацию атаки в очереди
-    table.insert(animationQueue, function(callback)
-        -- Анимация движения к цели
-        local attackEffect = display.newCircle(scene.view, originalX, originalY, 15)
-        attackEffect:setFillColor(1, 0.3, 0.3, 0.8)
-        
-        transition.to(attackEffect, {
-            time = 300,
-            x = display.contentCenterX,
-            y = targetY,
-            onComplete = function()
-                -- Применение урона после завершения анимации
-                local damage = attacker.attack
-                
-                -- Визуальный эффект удара
-                local impactEffect = display.newCircle(scene.view, display.contentCenterX, targetY, 25)
-                impactEffect:setFillColor(1, 0, 0, 0.6)
-                
-                transition.to(impactEffect, {
-                    time = 200,
-                    alpha = 0,
-                    xScale = 2,
-                    yScale = 2,
-                    onComplete = function()
-                        impactEffect:removeSelf()
-                        attackEffect:removeSelf()
-                        
-                        -- Применяем урон и логируем результат
-                        if targetType == "enemy" then
-                            enemyHealth = enemyHealth - damage
-                            addToLog(attacker.name .. " атаковал противника напрямую, нанеся " .. damage .. " урона")
-                        else
-                            playerHealth = playerHealth - damage
-                            addToLog(attacker.name .. " атаковал вас напрямую, нанеся " .. damage .. " урона")
-                        end
-                        
-                        -- Отображаем текст с уроном
-                        local damageText = display.newText({
-                            parent = scene.view,
-                            text = "-" .. damage,
-                            x = display.contentCenterX,
-                            y = targetY,
-                            font = native.systemFontBold,
-                            fontSize = 28
-                        })
-                        damageText:setFillColor(1, 0, 0)
-                        
-                        transition.to(damageText, {
-                            time = 500,
-                            y = targetY - 30,
-                            alpha = 0,
-                            onComplete = function()
-                                damageText:removeSelf()
-                                -- Обновление отображения здоровья
-                                updateHealthDisplay()
-                                
-                                -- Проверка победы/поражения после атаки
-                                local gameEnded = checkWinCondition()
-                                
-                                -- Если игра не завершилась, продолжаем выполнение callback
-                                if not gameEnded and callback then
-                                    callback()
-                                end
-                            end
-                        })
-                    end
-                })
-            end
-        })
-    end)
-    
-    -- Запускаем очередь анимаций, если она не запущена
+    -- Запускаем анимации, если они не запущены
     if not animationInProgress then
         processAnimationQueue()
     end
@@ -1514,6 +1393,88 @@ updateHealthDisplay = function()
     
     if enemyHealthText then
         enemyHealthText.text = "Здоровье: " .. enemyHealth
+    end
+end
+
+-- Функция обработки очереди анимаций
+processAnimationQueue = function()
+    -- Если очередь пуста или уже идет анимация, выходим
+    if #animationQueue == 0 or animationInProgress then
+        return
+    end
+    
+    -- Устанавливаем флаг, что анимация в процессе
+    animationInProgress = true
+    
+    -- Получаем первую анимацию из очереди
+    local currentAnimation = table.remove(animationQueue, 1)
+    
+    -- Запускаем анимацию с колбэком, который вызовет следующую анимацию
+    currentAnimation(function()
+        -- Когда анимация завершена, снимаем флаг
+        animationInProgress = false
+        -- И запускаем следующую анимацию, если она есть
+        if #animationQueue > 0 then
+            timer.performWithDelay(200, processAnimationQueue)
+        end
+    end)
+end
+
+-- Обновление отображения здоровья карты
+updateCardHealth = function(card)
+    -- Ищем визуальное представление карты
+    if card and card.group then
+        -- Находим текст здоровья в группе
+        for i = 1, card.group.numChildren do
+            local child = card.group[i]
+            if child.text and string.find(child.text, "/") then
+                -- Обновляем текст с атакой и здоровьем
+                child.text = card.attack .. "/" .. card.health
+                break
+            end
+        end
+    end
+end
+
+-- Уничтожение карты
+destroyCard = function(card, field, position)
+    addToLog(card.name .. " уничтожен")
+    
+    -- Если карта имеет визуальное представление, анимируем уничтожение
+    if card.group then
+        -- Сохраняем ссылку на ячейку поля
+        local cellGroup = fieldCells[position + (field == playerField and 5 or 0)]
+        
+        -- Анимируем уничтожение карты
+        transition.to(card.group, {
+            time = 300,
+            alpha = 0,
+            xScale = 0.5,
+            yScale = 0.5,
+            onComplete = function()
+                card.group:removeSelf()
+                card.group = nil
+                -- Удаляем карту из поля, но сохраняем ячейку
+                field[position] = nil
+                
+                -- Обновляем отображение поля
+                updateFieldVisuals()
+            end
+        })
+    else
+        -- Если нет визуального представления, просто удаляем карту
+        field[position] = nil
+        -- Обновляем отображение поля
+        updateFieldVisuals()
+    end
+    
+    -- Применяем особые эффекты при гибели
+    if card.name == "Жрец Тьмы" then
+        -- Добавляем урон игроку при гибели
+        local damage = 2
+        playerHealth = playerHealth - damage
+        addToLog("Жрец Тьмы наносит " .. damage .. " урона вашему герою при гибели")
+        showAction("Жрец Тьмы наносит " .. damage .. " урона вашему герою!")
     end
 end
 
